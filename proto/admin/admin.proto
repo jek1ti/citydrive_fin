@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package admin;
+
+option go_package = "github.com/jekiti/citydrive/gen/proto/admin; adminpb";
+
+
+// ====== ENUMS ======
+enum FuelType {
+  FUEL_TYPE_UNSPECIFIED = 0;
+  DIESEL = 1;
+  GASOLINE_92 = 2;  // "92"
+  GASOLINE_95 = 3;  // "95"
+  GASOLINE_98 = 4;  // "98"
+}
+
+// ====== CORE MODELS ======
+
+// Краткая сводка по машине для "now".
+message CarShort {
+  string id    = 1;  // internal car id
+  string brand = 2;
+  string model = 3;
+  double lat   = 4;  // latitude
+  double lon   = 5;  // longitude
+  int32  speed = 6;  // km/h
+}
+
+// Полная карточка машины.
+message CarDetails {
+  string brand  = 1;
+  string model  = 2;
+  int32  year_of_manufacture = 3;  // e.g. 2007
+  int64  odo    = 4;               // одометр
+  double lat    = 5;
+  double lon    = 6;
+  double fuel   = 7;               // % бака
+  FuelType fuel_type = 8;          // diesel, 92, 95, 98
+  int32  speed  = 9;               // km/h
+  bool   engine_on = 10;
+  bool   locked    = 11;
+  bool   activated = 12;
+  int32  rpm       = 13;           // engine revs
+  bool   handbrake = 14;
+}
+
+// Точка истории состояния (для списков в history).
+message CarHistoryPoint {
+  string brand = 1;
+  string model = 2;
+  double lat   = 3;
+  double lon   = 4;
+  int32  speed = 5;    // km/h
+  int64  time  = 6;    // unix timestamp (sec)
+}
+
+// Детальная точка истории конкретного авто (:id/history).
+message CarState {
+  double lat   = 1;
+  double lon   = 2;
+  double fuel  = 3;     // %
+  int32  speed = 4;     // km/h
+  bool   engine_on = 5;
+  bool   locked    = 6;
+  bool   activated = 7;
+  int32  rpm       = 8;
+  bool   handbrake = 9;
+  int64  time      = 10; // unix timestamp (sec)
+}
+
+// Обёртка для map<string, repeated CarHistoryPoint>
+message CarHistoryList {
+  repeated CarHistoryPoint items = 1;
+}
+
+// ====== REQUESTS/RESPONSES ======
+
+// GET /api/v1/cars/now  — активированные машины на текущий момент.
+message GetCarsNowRequest {
+  // Зарезервировано под будущее (фильтры и т.п.). Сейчас пусто.
+}
+message GetCarsNowResponse {
+  repeated CarShort cars = 1;
+}
+
+// GET /api/v1/cars/{id} — полная информация по авто.
+message GetCarRequest {
+  string id = 1;
+}
+message GetCarResponse {
+  CarDetails car = 1;
+}
+
+// GET /api/v1/cars/history?from=&to=&activated=
+message GetCarsHistoryRequest {
+  int64 from = 1;       // unix timestamp (sec), inclusive
+  int64 to   = 2;       // unix timestamp (sec), inclusive/exclusive по вашему БЛ
+  // Фильтр: активирован ли автомобиль. Если не передан — не фильтруем.
+  // Для REST: ?activated=true|false
+  optional bool activated = 3;
+}
+message GetCarsHistoryResponse {
+  // Ключ — id машины, значение — список её точек за окно.
+  map<string, CarHistoryList> history_by_car = 1;
+}
+
+// GET /api/v1/cars/{id}/history?from=&to=
+message GetCarHistoryRequest {
+  string id  = 1;
+  int64 from = 2; // unix timestamp (sec)
+  int64 to   = 3; // unix timestamp (sec)
+}
+message GetCarHistoryResponse {
+  // Если авто стояло/было неактивно весь период — возвращаем один объект.
+  // Иначе — все лог-записи за окно.
+  repeated CarState states = 1;
+}
+
+// ====== SERVICE ======
+service AdminService {
+  // GET /api/v1/cars/now
+  rpc GetCarsNow(GetCarsNowRequest) returns (GetCarsNowResponse);
+
+  // GET /api/v1/cars/{id}
+  rpc GetCar(GetCarRequest) returns (GetCarResponse) ;
+
+  // GET /api/v1/cars/history
+  rpc GetCarsHistory(GetCarsHistoryRequest) returns (GetCarsHistoryResponse) ;
+
+  // GET /api/v1/cars/{id}/history
+  rpc GetCarHistory(GetCarHistoryRequest) returns (GetCarHistoryResponse);
+}

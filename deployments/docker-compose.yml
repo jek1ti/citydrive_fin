@@ -1,0 +1,236 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: citydrive-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-citydrive}
+      POSTGRES_USER: ${POSTGRES_USER:-citydrive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-citydrive} -d ${POSTGRES_DB:-citydrive}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: citydrive-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - citydrive-net
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.1.4
+    container_name: citydrive-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - citydrive-net
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.1.4
+    container_name: citydrive-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "cub kafka-ready -b localhost:9092 1 20"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    image: migrate/migrate:v4.16.2
+    container_name: citydrive-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../migrations:/migrations:ro
+    networks:
+      - citydrive-net
+    command: ["-path=/migrations", "-database=${MIGRATE_DB_URL}", "up"]
+    restart: "no"
+
+  auth:
+    container_name: citydrive-auth
+    build:
+      context: ..
+      dockerfile: auth/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      GRPC_PORT: "50051"
+    volumes:
+      - ./.env:/app/.env:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  telemetry:
+    container_name: citydrive-telemetry
+    build:
+      context: ..
+      dockerfile: telemetry/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      GRPC_PORT: "50052"
+    volumes:
+      - ./.env:/app/.env:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50052"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  admin:
+    container_name: citydrive-admin
+    build:
+      context: ..
+      dockerfile: admin/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      GRPC_PORT: "50053"
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50053"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  processing:
+    container_name: citydrive-processing
+    build:
+      context: ..
+      dockerfile: processing/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      HTTP_PORT: "8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${PROCESSING_HTTP_PORT:-8083}:8083"
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/health/liveness >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api-gateway:
+    container_name: citydrive-api-gateway
+    build:
+      context: ..
+      dockerfile: api-gateway/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      HTTP_PORT: "8080"
+    depends_on:
+      auth:
+        condition: service_healthy
+      telemetry:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    ports:
+      - "${GATEWAY_HTTP_PORT:-8080}:8080"
+    networks:
+      - citydrive-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: citydrive-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@citydrive.ru}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-8081}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - citydrive-net
+    restart: unless-stopped
+
+networks:
+  citydrive-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

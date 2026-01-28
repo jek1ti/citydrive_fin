@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package telemetry;
+
+option go_package = "github.com/jekiti/citydrive/gen/proto/telemetry;telemetrypb";
+
+service TelemetryService {
+  rpc PutTelemetry(PutRequest) returns (PutResponse);
+}
+
+// Запрос телеметрии от автомобиля
+message PutRequest {
+  string brand               = 1;  // car brand
+  string model               = 2;  // car model
+  int32 year_of_manufacture  = 3;  // year of manufacture
+  int64 odo                  = 4;  // odometer
+  double lat                 = 5;  // latitude
+  double lon                 = 6;  // longitude
+  double fuel                = 7;  // percents of fuel tank
+  string fuel_type           = 8;  // one of (diesel, 92,95,98)
+  int32 speed                = 9;  // km/h
+  bool engine_on             = 10; // is the engine running
+  bool locked                = 11; // are the car doors closed
+  bool activated             = 12; // is the car in use
+  int32 rpm                  = 13; // engine revs
+  bool handbrake             = 14; // is the handbrake activated
+}
+
+
+message PutResponse {       
+  string message = 2;        
+}
